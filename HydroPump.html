@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Pump Hydropower Simulation</title>
+    <style>
+        /* Styles */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #eef7ff;
+            margin: 0;
+            overflow: hidden;
+        }
+        #canvas {
+            display: block;
+            margin: 0 auto;
+            background-color: #d0e7ff;
+        }
+        /* Control Buttons and Sliders */
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+            align-items: center;
+        }
+        button {
+            padding: 8px 12px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        /* Slider Styles */
+        input[type="range"] {
+            width: 150px;
+        }
+        /* Information Panel */
+        #infoPanel {
+            position: absolute;
+            top: 60px;
+            left: 10px;
+            background-color: #ffffffcc;
+            padding: 10px;
+            border-radius: 5px;
+            width: 240px;
+            font-size: 12px;
+            z-index: 10;
+        }
+        /* Graph Canvases */
+        #priceGraphCanvas, #demandGraphCanvas, #operationGraphCanvas {
+            position: absolute;
+            left: 10px;
+            border: 1px solid #ccc;
+            background-color: #fff;
+            z-index: 10;
+            width: 220px;
+            height: 100px;
+        }
+        #priceGraphCanvas { bottom: 230px; }
+        #demandGraphCanvas { bottom: 120px; }
+        #operationGraphCanvas { bottom: 10px; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="800" height="600"></canvas>
+    <canvas id="priceGraphCanvas"></canvas>
+    <canvas id="demandGraphCanvas"></canvas>
+    <canvas id="operationGraphCanvas"></canvas>
+
+    <!-- Control Buttons and Sliders -->
+    <div class="controls">
+        <button id="generateButton">Start Generation</button>
+        <label for="flowRateSlider">Adjust Generation:</label>
+        <input type="range" id="flowRateSlider" min="0" max="100" value="50">
+        <button id="pumpButton">Start Pumping</button>
+        <button id="autoButton">Auto Mode</button>
+    </div>
+
+    <!-- Information Panel -->
+    <div id="infoPanel">
+        <p><strong>Energy Price:</strong> $<span id="energyPrice">50</span>/MWh</p>
+        <p><strong>Demand:</strong> <span id="demand">50</span> MW</p>
+        <p><strong>Generation:</strong> <span id="generation">0</span> MW</p>
+        <p><strong>Stored Energy:</strong> <span id="energyStored">50</span>%</p>
+        <p><strong>Upper Reservoir:</strong> <span id="upperLevel">50</span>%</p>
+        <p><strong>Lower Reservoir:</strong> <span id="lowerLevel">50</span>%</p>
+        <p><strong>Operation Status:</strong> <span id="operationStatus">Idle</span></p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        const priceGraphCanvas = document.getElementById('priceGraphCanvas');
+        const priceGraphCtx = priceGraphCanvas.getContext('2d');
+
+        const demandGraphCanvas = document.getElementById('demandGraphCanvas');
+        const demandGraphCtx = demandGraphCanvas.getContext('2d');
+
+        const operationGraphCanvas = document.getElementById('operationGraphCanvas');
+        const operationGraphCtx = operationGraphCanvas.getContext('2d');
+
+        const generateButton = document.getElementById('generateButton');
+        const flowRateSlider = document.getElementById('flowRateSlider');
+        const pumpButton = document.getElementById('pumpButton');
+        const autoButton = document.getElementById('autoButton');
+        const energyPriceDisplay = document.getElementById('energyPrice');
+        const demandDisplay = document.getElementById('demand');
+        const generationDisplay = document.getElementById('generation');
+        const energyStoredDisplay = document.getElementById('energyStored');
+        const upperLevelDisplay = document.getElementById('upperLevel');
+        const lowerLevelDisplay = document.getElementById('lowerLevel');
+        const operationStatusDisplay = document.getElementById('operationStatus');
+
+        // Simulation variables
+        let isGenerating = false;
+        let isPumping = false;
+        let isAuto = false;
+        let upperLevel = 50; // Percentage
+        let lowerLevel = 50; // Percentage
+        let energyStored = 50; // Percentage
+        let energyPrice = 50; // $/MWh
+        let efficiency = 0.85; // 85% efficiency
+        let demand = 50; // MW
+        let generation = 0; // MW
+        let flowRate = 50; // 0~100
+
+        let time = 0; // Time variable
+        const priceHistory = []; // Energy price history
+        const demandHistory = []; // Demand history
+        const generationHistory = []; // Generation history
+        const operationHistory = []; // Operation status history ('generate', 'pump', 'idle')
+
+        // Water particles
+        let particles = [];
+        let pumpParticles = []; // Pumping particles
+
+        // Electron particles
+        let electrons = [];
+
+        // Define pipeline paths
+        const pipelinePath = [
+            { x: 130, y: 180 }, // Upper reservoir exit
+            { x: 400, y: 300 }, // Turbine location
+            { x: 670, y: 450 }  // Lower reservoir entrance
+        ];
+
+        const pumpPath = [
+            { x: 670, y: 570 }, // Lower reservoir exit
+            { x: 385, y: 570 }, // Pump location
+            { x: 100, y: 570 }, // Move left
+            { x: 100, y: 180 }  // Upper reservoir entrance
+        ];
+
+        // Variable to track energy generated from the turbine
+        let energyGenerated = 0;
+
+        // Variables to track particles for generation calculation
+        let particlesAtTurbine = [];
+
+        // Define Particle class
+        class Particle {
+            constructor(path) {
+                this.path = path;
+                this.currentSegment = 0;
+                this.x = path[0].x;
+                this.y = path[0].y;
+                this.speed = 2 + Math.random(); // Slight speed variation
+                this.color = '#3498db';
+                this.radius = 2;
+                this.atTurbine = false;
+            }
+
+            update() {
+                if (this.currentSegment >= this.path.length - 1) {
+                    // Remove when reaching last point
+                    return false;
+                }
+
+                const target = this.path[this.currentSegment + 1];
+                const dx = target.x - this.x;
+                const dy = target.y - this.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < this.speed) {
+                    // Move to next segment
+                    this.x = target.x;
+                    this.y = target.y;
+                    this.currentSegment++;
+                } else {
+                    // Normalize direction vector
+                    const vx = (dx / dist) * this.speed;
+                    const vy = (dy / dist) * this.speed;
+                    this.x += vx;
+                    this.y += vy;
+                }
+
+                // Rotate turbine near turbine
+                if (this.currentSegment === 1 && !this.atTurbine) {
+                    if (dist < 5) {
+                        turbine.speed += this.speed * 0.001; // Increase turbine rotation speed
+                        this.atTurbine = true;
+                        // Contribute to generation
+                        particlesAtTurbine.push(this.speed);
+                    }
+                }
+
+                return true;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+            }
+        }
+
+        // Define PumpParticle class
+        class PumpParticle {
+            constructor(path) {
+                this.path = path;
+                this.currentSegment = 0;
+                this.x = path[0].x;
+                this.y = path[0].y;
+                this.speed = 2 + Math.random();
+                this.color = '#3498db';
+                this.radius = 2;
+            }
+
+            update() {
+                if (this.currentSegment >= this.path.length - 1) {
+                    // Remove when reaching last point
+                    return false;
+                }
+
+                const target = this.path[this.currentSegment + 1];
+                const dx = target.x - this.x;
+                const dy = target.y - this.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < this.speed) {
+                    // Move to next segment
+                    this.x = target.x;
+                    this.y = target.y;
+                    this.currentSegment++;
+                } else {
+                    // Normalize direction vector
+                    const vx = (dx / dist) * this.speed;
+                    const vy = (dy / dist) * this.speed;
+                    this.x += vx;
+                    this.y += vy;
+                }
+
+                return true;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+            }
+        }
+
+        // Define Electron class
+        class Electron {
+            constructor(path) {
+                this.path = path;
+                this.currentSegment = 0;
+                this.x = path[0].x;
+                this.y = path[0].y;
+                this.speed = 2;
+            }
+
+            update() {
+                if (this.currentSegment >= this.path.length - 1) {
+                    // Remove when reaching last point
+                    return false;
+                }
+
+                const target = this.path[this.currentSegment + 1];
+                const dx = target.x - this.x;
+                const dy = target.y - this.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < this.speed) {
+                    // Move to next segment
+                    this.x = target.x;
+                    this.y = target.y;
+                    this.currentSegment++;
+                } else {
+                    // Normalize direction vector
+                    const vx = (dx / dist) * this.speed;
+                    const vy = (dy / dist) * this.speed;
+                    this.x += vx;
+                    this.y += vy;
+                }
+
+                return true;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 2, 0, Math.PI * 2);
+                ctx.fillStyle = '#e67e22';
+                ctx.fill();
+            }
+        }
+
+        // Turbine object
+        const turbine = {
+            x: 400,
+            y: 300,
+            width: 60,
+            height: 100,
+            angle: 0,
+            speed: 0, // Turbine speed determined by water particles interaction
+            draw() {
+                // Draw turbine housing
+                ctx.fillStyle = '#bdc3c7';
+                ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
+
+                // Draw blades (side view)
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+                ctx.fillStyle = '#34495e';
+                ctx.fillRect(-5, -this.height / 2, 10, this.height);
+                ctx.restore();
+            },
+            update() {
+                this.angle += this.speed;
+                // Slow down gradually due to friction
+                this.speed *= 0.98;
+            }
+        };
+
+        // Power lines and house objects
+        const powerLines = [];
+        const electronPath = []; // Define electron movement path
+
+        for (let i = 0; i < 4; i++) {
+            const poleX = turbine.x + (i + 1) * 70;
+            const poleY = turbine.y - 100;
+
+            powerLines.push({
+                x: poleX,
+                y: poleY,
+                lightOn: false,
+                draw() {
+                    // Draw power pole
+                    ctx.fillStyle = '#7f8c8d';
+                    ctx.fillRect(this.x - 5, this.y - 100, 10, 100); // Pole
+                    ctx.fillRect(this.x - 20, this.y - 100, 40, 10); // Crossbar
+
+                    // Draw power lines
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y - 95);
+                    ctx.lineTo(this.x + 70, this.y - 95);
+                    ctx.stroke();
+
+                    // Draw house
+                    if (i === 3) {
+                        ctx.fillStyle = '#ecf0f1';
+                        ctx.fillRect(this.x + 70, this.y - 60, 50, 50); // House body
+                        ctx.fillStyle = '#e74c3c';
+                        ctx.fillRect(this.x + 70, this.y - 70, 50, 10); // Roof
+
+                        // Windows
+                        ctx.fillStyle = this.lightOn ? '#f1c40f' : '#7f8c8d';
+                        ctx.fillRect(this.x + 80, this.y - 50, 15, 15);
+                        ctx.fillRect(this.x + 105, this.y - 50, 15, 15);
+
+                        // Add last point to electron path (to house)
+                        electronPath.push({ x: this.x + 70, y: this.y - 95 });
+                    }
+                },
+                update() {
+                    // Adjust light brightness based on generation
+                    this.lightOn = generation > 0;
+                }
+            });
+
+            // Define electron movement path
+            electronPath.push({ x: poleX, y: poleY - 95 });
+        }
+
+        // Add starting point for electron path (from turbine)
+        electronPath.unshift({ x: turbine.x, y: turbine.y - 50 });
+
+        // Helper function to draw smooth curves using quadratic Bézier curves
+        function drawSmoothCurve(ctx, points) {
+            if (points.length < 2) return;
+
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+
+            for (let i = 1; i < points.length - 1; i++) {
+                const xc = (points[i].x + points[i + 1].x) / 2;
+                const yc = (points[i].y + points[i + 1].y) / 2;
+                ctx.quadraticCurveTo(points[i].x, points[i].y, xc, yc);
+            }
+
+            // Curve through the last two points
+            ctx.quadraticCurveTo(
+                points[points.length - 1].x,
+                points[points.length - 1].y,
+                points[points.length - 1].x,
+                points[points.length - 1].y
+            );
+            ctx.stroke();
+        }
+
+        // Function to update display
+        function updateDisplay() {
+            energyPriceDisplay.textContent = energyPrice.toFixed(2);
+            demandDisplay.textContent = demand.toFixed(0);
+            generationDisplay.textContent = generation.toFixed(0);
+            energyStoredDisplay.textContent = energyStored.toFixed(1);
+            upperLevelDisplay.textContent = upperLevel.toFixed(1);
+            lowerLevelDisplay.textContent = lowerLevel.toFixed(1);
+            if (isPumping) {
+                operationStatusDisplay.textContent = 'Pumping';
+            } else if (isGenerating) {
+                operationStatusDisplay.textContent = 'Generating';
+            } else {
+                operationStatusDisplay.textContent = 'Idle';
+            }
+        }
+
+        // Function to fluctuate energy price and demand
+        function fluctuateEnergyPriceAndDemand() {
+            energyPrice = 50 + 30 * Math.sin(time / 50);
+            energyPrice = Math.max(20, Math.min(80, energyPrice));
+            priceHistory.push(energyPrice);
+            if (priceHistory.length > 220) {
+                priceHistory.shift();
+            }
+
+            demand = 50 + 30 * Math.sin((time + 100) / 60);
+            demand = Math.max(20, Math.min(80, demand));
+            demandHistory.push(demand);
+            if (demandHistory.length > 220) {
+                demandHistory.shift();
+            }
+        }
+
+        // Function to create water particles
+        function createParticles(flowRate) {
+            const numParticles = Math.floor(flowRate / 10);
+            for (let i = 0; i < numParticles; i++) {
+                particles.push(new Particle(pipelinePath));
+            }
+        }
+
+        // Function to create pumping particles
+        function createPumpParticles() {
+            const numParticles = 3;
+            for (let i = 0; i < numParticles; i++) {
+                pumpParticles.push(new PumpParticle(pumpPath));
+            }
+        }
+
+        // Function to create electrons
+        function createElectrons() {
+            // Create electrons proportionally to generation
+            const numElectrons = Math.floor(generation / 10);
+            for (let i = 0; i < numElectrons; i++) {
+                electrons.push(new Electron(electronPath));
+            }
+        }
+
+        // Function to draw energy price graph with smooth curves
+        function drawPriceGraph() {
+            priceGraphCtx.clearRect(0, 0, priceGraphCanvas.width, priceGraphCanvas.height);
+
+            // Prepare points for the curve
+            const points = priceHistory.map((price, index) => {
+                const x = (index / 220) * priceGraphCanvas.width;
+                const y = priceGraphCanvas.height - ((price - 20) / 60) * priceGraphCanvas.height;
+                return { x, y };
+            });
+
+            // Draw smooth curve
+            priceGraphCtx.strokeStyle = '#e74c3c';
+            priceGraphCtx.lineWidth = 2;
+            drawSmoothCurve(priceGraphCtx, points);
+
+            // Axis label
+            priceGraphCtx.fillStyle = '#000';
+            priceGraphCtx.font = '12px Arial';
+            priceGraphCtx.fillText('Energy Price ($/MWh)', 10, 15);
+        }
+
+        // Function to draw demand and generation graph with smooth curves
+        function drawDemandGraph() {
+            demandGraphCtx.clearRect(0, 0, demandGraphCanvas.width, demandGraphCanvas.height);
+
+            // Prepare demand points
+            const demandPoints = demandHistory.map((d, index) => {
+                const x = (index / 220) * demandGraphCanvas.width;
+                const y = demandGraphCanvas.height - ((d - 20) / 60) * demandGraphCanvas.height;
+                return { x, y };
+            });
+
+            // Prepare generation points
+            const generationPoints = generationHistory.map((g, index) => {
+                const x = (index / 220) * demandGraphCanvas.width;
+                const y = demandGraphCanvas.height - ((g - 0) / 80) * demandGraphCanvas.height;
+                return { x, y };
+            });
+
+            // Draw demand curve
+            demandGraphCtx.strokeStyle = '#2ecc71';
+            demandGraphCtx.lineWidth = 2;
+            drawSmoothCurve(demandGraphCtx, demandPoints);
+
+            // Draw generation curve
+            demandGraphCtx.strokeStyle = '#3498db';
+            demandGraphCtx.lineWidth = 2;
+            drawSmoothCurve(demandGraphCtx, generationPoints);
+
+            // Axis label
+            demandGraphCtx.fillStyle = '#000';
+            demandGraphCtx.font = '12px Arial';
+            demandGraphCtx.fillText('Demand and Generation (MW)', 10, 15);
+        }
+
+        // Function to draw operation status graph (unchanged as it's categorical)
+        function drawOperationGraph() {
+            operationGraphCtx.clearRect(0, 0, operationGraphCanvas.width, operationGraphCanvas.height);
+
+            for (let i = 0; i < operationHistory.length; i++) {
+                const x = (i / 220) * operationGraphCanvas.width;
+                let color;
+                if (operationHistory[i] === 'generate') {
+                    color = '#3498db'; // Blue (Generating)
+                } else if (operationHistory[i] === 'pump') {
+                    color = '#9b59b6'; // Purple (Pumping)
+                } else {
+                    color = '#95a5a6'; // Gray (Idle)
+                }
+                operationGraphCtx.fillStyle = color;
+                operationGraphCtx.fillRect(x, 0, operationGraphCanvas.width / 220, operationGraphCanvas.height);
+            }
+
+            // Axis label
+            operationGraphCtx.fillStyle = '#000';
+            operationGraphCtx.font = '12px Arial';
+            operationGraphCtx.fillText('Operation Status', 10, 15);
+        }
+
+        // Main animation loop
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw upper reservoir
+            ctx.fillStyle = '#a0d2ff';
+            const upperWaterHeight = 150 * (upperLevel / 100);
+            ctx.fillRect(30, 30 + (150 - upperWaterHeight), 200, upperWaterHeight);
+            ctx.strokeStyle = '#4a90e2';
+            ctx.strokeRect(30, 30, 200, 150);
+
+            // Draw lower reservoir
+            ctx.fillStyle = '#a0d2ff';
+            const lowerWaterHeight = 150 * (lowerLevel / 100);
+            ctx.fillRect(570, 420 + (150 - lowerWaterHeight), 200, lowerWaterHeight);
+            ctx.strokeStyle = '#4a90e2';
+            ctx.strokeRect(570, 420, 200, 150);
+
+            // Draw pipeline (turbine path)
+            ctx.strokeStyle = '#cccccc'; // Light color
+            ctx.lineWidth = 20; // Thicker
+            ctx.beginPath();
+            ctx.moveTo(pipelinePath[0].x, pipelinePath[0].y);
+            for (let i = 1; i < pipelinePath.length; i++) {
+                ctx.lineTo(pipelinePath[i].x, pipelinePath[i].y);
+            }
+            ctx.stroke();
+
+            // Draw pipeline (pumping path)
+            ctx.strokeStyle = '#cccccc'; // Light color
+            ctx.lineWidth = 20; // Thicker
+            ctx.beginPath();
+            ctx.moveTo(pumpPath[0].x, pumpPath[0].y);
+            for (let i = 1; i < pumpPath.length; i++) {
+                ctx.lineTo(pumpPath[i].x, pumpPath[i].y);
+            }
+            ctx.stroke();
+
+            // Draw pump
+            ctx.fillStyle = '#e67e22';
+            ctx.fillRect(370, 550, 30, 40);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '12px Arial';
+            ctx.fillText('Pump', 373, 570);
+
+            // Draw turbine
+            turbine.draw();
+            turbine.update();
+
+            // Draw water particles (turbine path)
+            particles = particles.filter(particle => {
+                const alive = particle.update();
+                if (alive) {
+                    particle.draw();
+                }
+                return alive;
+            });
+
+            // Draw pumping particles (pumping path)
+            pumpParticles = pumpParticles.filter(particle => {
+                const alive = particle.update();
+                if (alive) {
+                    particle.draw();
+                }
+                return alive;
+            });
+
+            // Draw power lines and house
+            powerLines.forEach(pole => {
+                pole.draw();
+                pole.update();
+            });
+
+            // Draw electron particles
+            electrons = electrons.filter(electron => {
+                const alive = electron.update();
+                if (alive) {
+                    electron.draw();
+                }
+                return alive;
+            });
+
+            // Display energy conversion processes
+            ctx.fillStyle = '#2ecc71';
+            ctx.font = '16px Arial';
+            ctx.fillText('Potential Energy', 100, 120);
+            ctx.fillText('Kinetic Energy', 400, 300);
+            ctx.fillText('Electrical Energy', 600, 80);
+
+            // Draw graphs
+            drawPriceGraph();
+            drawDemandGraph();
+            drawOperationGraph();
+
+            requestAnimationFrame(animate);
+        }
+
+        // Simulation function
+        function simulate() {
+            time++;
+
+            fluctuateEnergyPriceAndDemand();
+
+            if (isAuto) {
+                // Auto mode logic
+                flowRate = demand;
+                isGenerating = true;
+                if (energyPrice < 40 && upperLevel < 100 && lowerLevel > 0) {
+                    isPumping = true;
+                } else {
+                    isPumping = false;
+                }
+                flowRateSlider.value = flowRate;
+                generateButton.textContent = 'Start Generation';
+                pumpButton.textContent = 'Start Pumping';
+            }
+
+            // Generation logic
+            if (isGenerating && upperLevel > 0 && lowerLevel < 100) {
+                let adjustedFlowRate = flowRate / 100;
+                upperLevel = Math.max(upperLevel - adjustedFlowRate * 0.1, 0);
+                lowerLevel = Math.min(lowerLevel + adjustedFlowRate * 0.1, 100);
+                energyStored += (adjustedFlowRate * 0.1 * efficiency);
+                energyStored = Math.min(energyStored, 100);
+                createParticles(flowRate);
+                operationHistory.push('generate');
+            } else {
+                operationHistory.push(isPumping ? 'pump' : 'idle');
+            }
+
+            // Calculate generation
+            generation = 0;
+            particlesAtTurbine.forEach(speed => {
+                generation += speed * 2.5; // Reduced multiplier from 5 to 2.5 to narrow amplitude
+            });
+            particlesAtTurbine = []; // Reset
+
+            // Save generation history
+            generationHistory.push(generation);
+            if (generationHistory.length > 220) {
+                generationHistory.shift();
+            }
+
+            // Manage operation status history
+            if (operationHistory.length > 220) {
+                operationHistory.shift();
+            }
+
+            // Create electrons
+            if (generation > 0) {
+                createElectrons();
+            }
+
+            // Pumping logic
+            if (isPumping && upperLevel < 100 && lowerLevel > 0) {
+                upperLevel = Math.min(upperLevel + 0.1, 100);
+                lowerLevel = Math.max(lowerLevel - 0.1, 0);
+                energyStored -= (0.1 / efficiency);
+                energyStored = Math.max(energyStored, 0);
+                createPumpParticles();
+                operationHistory[operationHistory.length - 1] = 'pump';
+            }
+
+            updateDisplay();
+        }
+
+        // Button event listeners
+        generateButton.addEventListener('click', () => {
+            isGenerating = !isGenerating;
+            isAuto = false;
+            generateButton.textContent = isGenerating ? 'Stop Generation' : 'Start Generation';
+            autoButton.textContent = 'Auto Mode';
+        });
+
+        flowRateSlider.addEventListener('input', () => {
+            flowRate = parseInt(flowRateSlider.value);
+        });
+
+        pumpButton.addEventListener('click', () => {
+            isPumping = !isPumping;
+            isAuto = false;
+            pumpButton.textContent = isPumping ? 'Stop Pumping' : 'Start Pumping';
+            autoButton.textContent = 'Auto Mode';
+        });
+
+        autoButton.addEventListener('click', () => {
+            isAuto = !isAuto;
+            isGenerating = false;
+            isPumping = false;
+            autoButton.textContent = isAuto ? 'Stop Auto Mode' : 'Auto Mode';
+            generateButton.textContent = 'Start Generation';
+            pumpButton.textContent = 'Start Pumping';
+        });
+
+        // Start simulation and animation
+        setInterval(simulate, 100);
+        animate();
+    </script>
+</body>
+</html>
